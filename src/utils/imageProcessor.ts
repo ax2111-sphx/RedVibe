@@ -26,13 +26,77 @@ async function mockRemoveBackground(imageUrl: string): Promise<string> {
 }
 
 /**
+ * Helper to compress image if it exceeds size limit (e.g. 4MB for Vercel)
+ */
+async function compressImage(blob: Blob, maxSizeMB: number = 4): Promise<Blob> {
+  if (blob.size <= maxSizeMB * 1024 * 1024) return blob;
+
+  console.log(`Image size ${blob.size} exceeds ${maxSizeMB}MB. Compressing...`);
+  
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+      
+      // Calculate new dimensions (start with 0.7 scale)
+      // We can also just reduce quality, but resizing is safer for large dims
+      const MAX_DIMENSION = 2048; 
+      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+         const ratio = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height);
+         width *= ratio;
+         height *= ratio;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas context not supported'));
+        return;
+      }
+      
+      ctx.drawImage(img, 0, 0, width, height);
+      
+      // Export with reduced quality
+      canvas.toBlob((compressedBlob) => {
+        if (!compressedBlob) {
+          reject(new Error('Compression failed'));
+          return;
+        }
+        console.log(`Compressed size: ${compressedBlob.size}`);
+        resolve(compressedBlob);
+      }, 'image/jpeg', 0.8);
+    };
+    
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+    
+    img.src = url;
+  });
+}
+
+/**
  * Calls Backend Proxy to remove background.
  */
 export async function removeBackground(imageUrl: string): Promise<string> {
   // Frontend no longer needs to know about the API Key
   
   try {
-    const blob = dataURLtoBlob(imageUrl);
+    let blob = dataURLtoBlob(imageUrl);
+    
+    // Compress if > 4MB (Vercel limit is 4.5MB, so 4MB is safe)
+    if (blob.size > 4 * 1024 * 1024) {
+      blob = await compressImage(blob, 4);
+    }
+
     const formData = new FormData();
     formData.append('image_file', blob);
     formData.append('size', 'auto');
